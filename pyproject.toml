@@ -1,0 +1,58 @@
+[project]
+name = "fusion"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { email = "parkjunyoungdoc@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.5",
+    "uvicorn[standard]>=0.52.4",
+    "websockets>=17.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.12,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.16.7",
+]
+studio = [
+    "pyside6>=6.7",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[project.scripts]
+fusion-motor = "fusion.apps.motor.main:run"
+fusion-scheduler = "fusion.apps.scheduler.main:run"
+fusion-motor-ui = "fusion.apps.motor.ui_main:run"
+fusion-scheduler-ui = "fusion.apps.scheduler.ui_main:run"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["fusion"]
+exclude = ["^src/fusion/ui/"]

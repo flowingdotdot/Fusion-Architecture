@@ -1,0 +1,16 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Runtime logs and manual-run scratch output (doc section 17: logs are a separate,
+# non-project path in principle -- these dev-run logs just haven't been relocated
+# out of the repo root yet)
+logs/
+*.log
