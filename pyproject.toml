@@ -11,6 +11,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "pydantic>=2.13.5",
+    "pyserial>=3.5",
     "uvicorn[standard]>=0.52.4",
     "websockets>=17.1",
 ]
@@ -26,6 +27,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-timeout>=2.4.0",
     "ruff>=0.16.7",
+    "types-pyserial>=3.5.0.20260712",
 ]
 studio = [
     "pyside6>=6.7",
@@ -39,10 +41,12 @@ fusion-motor = "fusion.apps.motor.main:run"
 fusion-scheduler = "fusion.apps.scheduler.main:run"
 fusion-motor-ui = "fusion.apps.motor.ui_main:run"
 fusion-scheduler-ui = "fusion.apps.scheduler.ui_main:run"
+fusion-motor-mightyzap = "fusion.apps.motor.main_mightyzap:run"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["plugins"]
 
 [tool.ruff]
 line-length = 100
@@ -55,4 +59,5 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.13"
 strict = true
 packages = ["fusion"]
+mypy_path = "plugins"
 exclude = ["^src/fusion/ui/"]
