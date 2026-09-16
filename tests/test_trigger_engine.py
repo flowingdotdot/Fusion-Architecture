@@ -157,3 +157,18 @@ async def test_action_error_is_reported_not_raised() -> None:
     )
     assert len(errors) == 1
     assert "cannot start from RUNNING" in str(errors[0])
+
+
+async def test_wildcard_source_matches_any_input_source() -> None:
+    engine, _controller, clock, calls = make_engine()
+    engine.register(
+        Trigger(trigger_id="t1", condition=TriggerCondition(type="start_button"), action="start")
+    )
+
+    await engine.handle(
+        InputEvent(source="serial", type="start_button", value=True, occurred_at=clock.now())
+    )
+    await engine.handle(
+        InputEvent(source="udp", type="start_button", value=True, occurred_at=clock.now())
+    )
+    assert calls == ["start", "start"]

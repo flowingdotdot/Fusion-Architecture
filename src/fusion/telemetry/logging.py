@@ -44,7 +44,15 @@ def configure_runtime_logging(
 
     logger = logging.getLogger("fusion")
     logger.setLevel(level)
-    logger.addFilter(_RuntimeContextFilter(runtime_id, runtime_boot_id))
+    # A Filter attached to this ("fusion") Logger object would NOT run for records
+    # actually emitted by child loggers like "fusion.motor"/"fusion.scheduler" --
+    # Python's propagation walk only re-checks each ancestor's *handlers*, not its
+    # *filters*, once the record has already passed the originating logger's own
+    # (empty) filter list. The filter has to live on the handlers instead, since
+    # Handler.handle() does apply its own filters regardless of which logger the
+    # record came from. (Found via a real KeyError: 'runtime_id' from every
+    # non-"fusion"-root logger call once this was actually exercised.)
+    context_filter = _RuntimeContextFilter(runtime_id, runtime_boot_id)
 
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)s runtime_id=%(runtime_id)s"
@@ -59,10 +67,12 @@ def configure_runtime_logging(
         delay=True,  # doc: file writes must not block the control loop at import/start time
     )
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(context_filter)
     logger.addHandler(file_handler)
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(context_filter)
     logger.addHandler(console_handler)
 
     return logger

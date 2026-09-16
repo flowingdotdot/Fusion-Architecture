@@ -22,7 +22,10 @@ class InputEvent(BaseModel):
 
 
 class TriggerCondition(BaseModel):
-    source: str
+    source: str | None = None
+    """``None`` matches an InputEvent from any source -- e.g. a "start" Trigger that
+    should fire the same way whether it came from the Serial, UDP, or OSC Endpoint,
+    since doc section 13 lets the operator enable any combination of those."""
     type: str
     comparator: Comparator = "eq"
     value: float | str | bool = True
@@ -45,7 +48,9 @@ class Trigger(BaseModel):
 
 
 def condition_matches(condition: TriggerCondition, event: InputEvent) -> bool:
-    if condition.source != event.source or condition.type != event.type:
+    if condition.source is not None and condition.source != event.source:
+        return False
+    if condition.type != event.type:
         return False
     try:
         if condition.comparator == "eq":
