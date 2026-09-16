@@ -79,6 +79,13 @@ class RuntimeClient:
         r.raise_for_status()
         return r.json()  # type: ignore[no-any-return]
 
+    async def get_bytes(self, path: str) -> bytes:
+        """For a Runtime-specific extra route that isn't part of the generic
+        RuntimeApi contract (e.g. Video's ``/preview`` JPEG snapshot)."""
+        r = await self._http.get(path)
+        r.raise_for_status()
+        return r.content
+
     async def events(self, after_sequence: int) -> AsyncGenerator[dict[str, Any]]:
         url = f"{self._ws_url}/api/v1/events"
         async with websockets.connect(url) as ws:

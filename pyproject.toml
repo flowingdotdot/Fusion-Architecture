@@ -31,6 +31,7 @@ dev = [
 ]
 studio = [
     "pyside6>=6.7",
+    "python-mpv>=1.0.8",
 ]
 
 [tool.uv]
@@ -42,6 +43,9 @@ fusion-scheduler = "fusion.apps.scheduler.main:run"
 fusion-motor-ui = "fusion.apps.motor.ui_main:run"
 fusion-scheduler-ui = "fusion.apps.scheduler.ui_main:run"
 fusion-motor-mightyzap = "fusion.apps.motor.main_mightyzap:run"
+fusion-video = "fusion.apps.video.main:run"
+fusion-video-mpv = "fusion.apps.video.main_mpv:run"
+fusion-video-ui = "fusion.apps.video.ui_main:run"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -61,3 +65,7 @@ strict = true
 packages = ["fusion"]
 mypy_path = "plugins"
 exclude = ["^src/fusion/ui/"]
+
+[[tool.mypy.overrides]]
+module = "mpv"
+ignore_missing_imports = true
