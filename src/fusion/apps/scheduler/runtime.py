@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from typing import Any
 
+from fusion.contracts.config import ApplyRecord, ConfigRevision
+from fusion.contracts.errors import ErrorCode, FusionError
 from fusion.contracts.ids import new_id
 from fusion.contracts.timeline import Timeline, validate_timeline
 from fusion.contracts.trigger import InputEvent, Trigger
 from fusion.core.clock import Clock
+from fusion.core.config_service import ConfigService
 from fusion.core.show_controller import ShowController, ShowState
 from fusion.core.timeline_executor import CueOutcome, TimelineExecutor
 from fusion.core.trigger_engine import ShowActions, TriggerEngine
@@ -36,6 +40,7 @@ class SchedulerRuntimeApp:
         self._timeline: Timeline | None = None
         self._session_ids: dict[str, str] = {}
         self.last_outcomes: dict[str, CueOutcome] = {}
+        self._config = ConfigService(clock)
 
         self.controller = ShowController(on_state_change=self._on_state_change)
         self.triggers = TriggerEngine(
@@ -152,3 +157,40 @@ class SchedulerRuntimeApp:
 
     def _on_state_change(self, state: ShowState) -> None:
         logger.info("show state -> %s run_id=%s", state.value, self.controller.run_id)
+
+    # ---- config stage/apply (doc section 15) ----
+    #
+    # Scheduler has no Targets, so DeviceRuntimeApp's default "any Target busy"
+    # apply_guard doesn't apply here -- the correct condition for a Runtime whose
+    # whole job is running a Show is Show state itself (doc: "Apply는 Show 정지...
+    # 등 적용 조건을 검사한다. 실행 중이면 staged 상태로 두고 적용 불가 이유를
+    # 반환한다"). Only IDLE allows Apply: PREPARING/ARMED are already committed to
+    # an imminent run and RUNNING/HOLDING/STOPPING are an active run, so a new
+    # Show/Timeline/Trigger revision could otherwise land mid-run and reference
+    # Cues/Targets the in-flight run didn't validate against.
+
+    def stage_config(self, kind: str, content: dict[str, Any]) -> ConfigRevision:
+        revision = self._config.stage(kind, content)
+        logger.info("config staged revision_id=%s kind=%s", revision.revision_id, kind)
+        return revision
+
+    async def apply_config(
+        self, revision_id: str, expected_active_revision: str | None = None
+    ) -> ApplyRecord:
+        record = await self._config.apply(
+            revision_id,
+            expected_active_revision=expected_active_revision,
+            apply_guard=self._apply_guard,
+        )
+        logger.info("config apply revision_id=%s outcome=%s", revision_id, record.outcome.value)
+        return record
+
+    async def _apply_guard(self) -> None:
+        if self.controller.state != ShowState.IDLE:
+            raise FusionError(
+                ErrorCode.VALIDATION_ERROR,
+                f"show is not idle (state={self.controller.state.value}), cannot apply now",
+            )
+
+    def get_config_status(self) -> dict[str, Any]:
+        return self._config.status()

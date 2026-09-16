@@ -7,10 +7,12 @@ the first one.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from fusion.contracts.command import CommandRecord, CommandSubmitRequest
@@ -19,6 +21,7 @@ from fusion.contracts.control import ControlSession, RuntimeMode
 from fusion.contracts.errors import ErrorCode, FusionError
 from fusion.contracts.event import Event
 from fusion.contracts.plugin import TargetManifest
+from fusion.core.blob_store import BlobRef
 
 
 class RuntimeApi(Protocol):
@@ -46,6 +49,10 @@ class RuntimeApi(Protocol):
         self, revision_id: str, expected_active_revision: str | None = None
     ) -> ApplyRecord: ...
     def get_config_status(self) -> dict[str, Any]: ...
+    async def save_blob(
+        self, chunks: AsyncIterator[bytes], *, expected_sha256: str | None = None
+    ) -> BlobRef: ...
+    def open_blob(self, sha256: str) -> Path: ...
 
 
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
@@ -53,6 +60,7 @@ _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.UNKNOWN_TARGET: 404,
     ErrorCode.UNKNOWN_ACTION: 404,
     ErrorCode.COMMAND_NOT_FOUND: 404,
+    ErrorCode.BLOB_NOT_FOUND: 404,
     ErrorCode.BUSY: 409,
     ErrorCode.REQUEST_ID_CONFLICT: 409,
     ErrorCode.CONTROL_SESSION_REQUIRED: 401,
@@ -140,6 +148,16 @@ def build_app(api: RuntimeApi) -> FastAPI:
     @app.get("/api/v1/config/status")
     async def config_status() -> dict[str, Any]:
         return api.get_config_status()
+
+    @app.post("/api/v1/files", status_code=201)
+    async def upload_file(request: Request, sha256: str | None = None) -> dict[str, Any]:
+        ref = await api.save_blob(request.stream(), expected_sha256=sha256)
+        return {"sha256": ref.sha256, "size": ref.size}
+
+    @app.get("/api/v1/files/{sha256}")
+    async def download_file(sha256: str) -> FileResponse:
+        path = api.open_blob(sha256)
+        return FileResponse(path, media_type="application/octet-stream")
 
     @app.websocket("/api/v1/events")
     async def events_ws(ws: WebSocket) -> None:

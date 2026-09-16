@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from fusion.contracts.command import (
@@ -30,6 +31,7 @@ from fusion.contracts.errors import ErrorCode, FusionError
 from fusion.contracts.event import Event
 from fusion.contracts.ids import new_boot_id
 from fusion.contracts.plugin import TargetManifest
+from fusion.core.blob_store import BlobHashMismatchError, BlobRef, BlobStore, BlobTooLargeError
 from fusion.core.clock import Clock
 from fusion.core.config_service import ConfigService
 from fusion.core.control_session import ControlSessionManager
@@ -52,6 +54,7 @@ class DeviceRuntimeApp:
         *,
         app_name: str,
         apply_guard: ApplyGuard | None = None,
+        blob_store: BlobStore | None = None,
     ) -> None:
         for adapter in adapters.values():
             validate_manifest(adapter)
@@ -66,6 +69,7 @@ class DeviceRuntimeApp:
         self._sessions = ControlSessionManager(clock, self.runtime_boot_id)
         self._config = ConfigService(clock)
         self._apply_guard = apply_guard or self._default_apply_guard
+        self._blobs = blob_store or BlobStore(Path("var") / "fusion" / runtime_id / "blobs")
         self._logger = logging.getLogger(f"fusion.{app_name}")
         self._runners: dict[str, TargetRunner] = {
             target_id: TargetRunner(target_id, adapter, clock, on_change=self._on_command_change)
@@ -269,3 +273,21 @@ class DeviceRuntimeApp:
 
     def get_config_status(self) -> dict[str, Any]:
         return self._config.status()
+
+    # ---- large file transfer (doc section 14: "대용량 패키지·영상·대량 로그는
+    # HTTPS로 전송한다") ----
+
+    async def save_blob(
+        self, chunks: AsyncIterator[bytes], *, expected_sha256: str | None = None
+    ) -> BlobRef:
+        try:
+            ref = await self._blobs.save_stream(chunks, expected_sha256=expected_sha256)
+        except (BlobTooLargeError, BlobHashMismatchError) as exc:
+            raise FusionError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
+        self._logger.info("blob stored sha256=%s size=%d", ref.sha256, ref.size)
+        return ref
+
+    def open_blob(self, sha256: str) -> Path:
+        if not self._blobs.exists(sha256):
+            raise FusionError(ErrorCode.BLOB_NOT_FOUND, f"unknown blob sha256 '{sha256}'")
+        return self._blobs.path_for(sha256)

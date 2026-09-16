@@ -6,8 +6,10 @@ same shape.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -105,6 +107,34 @@ class RuntimeClient:
         r = await self._http.get(path)
         r.raise_for_status()
         return r.content
+
+    async def upload_file(
+        self, file_path: Path, *, expected_sha256: str | None = None
+    ) -> dict[str, Any]:
+        """Streams a local file to the Runtime's blob store (doc section 14:
+        "대용량 패키지·영상·대량 로그는 HTTPS로 전송한다") -- reads in chunks off a
+        worker thread so a large upload doesn't block the event loop, and uses no
+        request timeout since transfer time scales with file size, not with the
+        5s default used for small JSON calls."""
+        params = {"sha256": expected_sha256} if expected_sha256 else None
+
+        async def _reader() -> AsyncGenerator[bytes]:
+            with file_path.open("rb") as fh:
+                while chunk := await asyncio.to_thread(fh.read, 1024 * 1024):
+                    yield chunk
+
+        r = await self._http.post("/api/v1/files", content=_reader(), params=params, timeout=None)
+        r.raise_for_status()
+        return r.json()  # type: ignore[no-any-return]
+
+    async def download_file(self, sha256: str, dest_path: Path) -> None:
+        async with self._http.stream(
+            "GET", f"/api/v1/files/{sha256}", timeout=None
+        ) as r:
+            r.raise_for_status()
+            with dest_path.open("wb") as fh:
+                async for chunk in r.aiter_bytes():
+                    await asyncio.to_thread(fh.write, chunk)
 
     async def events(self, after_sequence: int) -> AsyncGenerator[dict[str, Any]]:
         url = f"{self._ws_url}/api/v1/events"
