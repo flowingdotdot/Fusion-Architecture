@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
 
 from fusion.contracts.command import (
     CommandOutcome,
@@ -23,12 +24,14 @@ from fusion.contracts.command import (
     CommandStatus,
     CommandSubmitRequest,
 )
+from fusion.contracts.config import ApplyRecord, ConfigRevision
 from fusion.contracts.control import ControlSession, RuntimeMode
 from fusion.contracts.errors import ErrorCode, FusionError
 from fusion.contracts.event import Event
 from fusion.contracts.ids import new_boot_id
 from fusion.contracts.plugin import TargetManifest
 from fusion.core.clock import Clock
+from fusion.core.config_service import ConfigService
 from fusion.core.control_session import ControlSessionManager
 from fusion.core.event_bus import EventBus
 from fusion.core.ledger import CommandLedger
@@ -36,6 +39,8 @@ from fusion.core.target_runner import TargetRunner
 from fusion.plugin_sdk.base import TargetAdapter, validate_manifest
 
 PROTOCOL_VERSION = 1
+
+ApplyGuard = Callable[[], Awaitable[None]]
 
 
 class DeviceRuntimeApp:
@@ -46,6 +51,7 @@ class DeviceRuntimeApp:
         clock: Clock,
         *,
         app_name: str,
+        apply_guard: ApplyGuard | None = None,
     ) -> None:
         for adapter in adapters.values():
             validate_manifest(adapter)
@@ -58,6 +64,8 @@ class DeviceRuntimeApp:
         self._ledger = CommandLedger()
         self._events = EventBus(runtime_id, self.runtime_boot_id)
         self._sessions = ControlSessionManager(clock, self.runtime_boot_id)
+        self._config = ConfigService(clock)
+        self._apply_guard = apply_guard or self._default_apply_guard
         self._logger = logging.getLogger(f"fusion.{app_name}")
         self._runners: dict[str, TargetRunner] = {
             target_id: TargetRunner(target_id, adapter, clock, on_change=self._on_command_change)
@@ -216,3 +224,48 @@ class DeviceRuntimeApp:
         for runner in self._runners.values():
             runner.bump_generation()
         self._logger.info("control session released session_id=%s", session_id)
+
+    # ---- config stage/apply (doc section 15) ----
+
+    async def _default_apply_guard(self) -> None:
+        """No app-specific guard was supplied: the only generic, always-correct
+        check is "nothing is actively in flight on this Runtime right now" -- a
+        real Motor/Video app should normally supply its own (e.g. Scheduler checks
+        Show state instead), but this default still enforces *something* rather
+        than silently allowing Apply during an active command."""
+        busy_targets = [target_id for target_id, runner in self._runners.items() if runner.busy]
+        if busy_targets:
+            raise FusionError(
+                ErrorCode.VALIDATION_ERROR,
+                f"targets busy, cannot apply now: {', '.join(busy_targets)}",
+            )
+
+    def stage_config(self, kind: str, content: dict[str, Any]) -> ConfigRevision:
+        revision = self._config.stage(kind, content)
+        self._logger.info("config staged revision_id=%s kind=%s", revision.revision_id, kind)
+        return revision
+
+    async def apply_config(
+        self, revision_id: str, expected_active_revision: str | None = None
+    ) -> ApplyRecord:
+        record = await self._config.apply(
+            revision_id,
+            expected_active_revision=expected_active_revision,
+            apply_guard=self._apply_guard,
+            on_applied=self._on_config_applied,
+        )
+        self._logger.info(
+            "config apply revision_id=%s outcome=%s", revision_id, record.outcome.value
+        )
+        return record
+
+    def _on_config_applied(self) -> None:
+        # doc: "출력 게이트 차단, execution_generation 갱신, 구명령 무효화 후 새
+        # 구성을 적용한다" -- reuses the exact same generation-bump mechanism a
+        # control session handover or a STOP-priority action already uses to
+        # invalidate whatever was in flight under the old configuration.
+        for runner in self._runners.values():
+            runner.bump_generation()
+
+    def get_config_status(self) -> dict[str, Any]:
+        return self._config.status()

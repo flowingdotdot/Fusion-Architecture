@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from fusion.contracts.command import CommandRecord, CommandSubmitRequest
+from fusion.contracts.config import ApplyRecord, ConfigRevision
 from fusion.contracts.control import ControlSession, RuntimeMode
 from fusion.contracts.errors import ErrorCode, FusionError
 from fusion.contracts.event import Event
@@ -40,6 +41,11 @@ class RuntimeApi(Protocol):
     ) -> ControlSession: ...
     async def renew_control_session(self, session_id: str) -> ControlSession: ...
     async def release_control_session(self, session_id: str) -> None: ...
+    def stage_config(self, kind: str, content: dict[str, Any]) -> ConfigRevision: ...
+    async def apply_config(
+        self, revision_id: str, expected_active_revision: str | None = None
+    ) -> ApplyRecord: ...
+    def get_config_status(self) -> dict[str, Any]: ...
 
 
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
@@ -63,6 +69,16 @@ class ControlSessionRequest(BaseModel):
     actor: str
     mode: RuntimeMode = RuntimeMode.MANUAL
     ttl_s: float | None = None
+
+
+class ConfigStageRequest(BaseModel):
+    kind: str
+    content: dict[str, Any]
+
+
+class ConfigApplyRequest(BaseModel):
+    revision_id: str
+    expected_active_revision: str | None = None
 
 
 def build_app(api: RuntimeApi) -> FastAPI:
@@ -110,6 +126,20 @@ def build_app(api: RuntimeApi) -> FastAPI:
     @app.delete("/api/v1/control-sessions/{session_id}", status_code=204)
     async def release_session(session_id: str) -> None:
         await api.release_control_session(session_id)
+
+    @app.post("/api/v1/config/stage", status_code=201)
+    async def stage_config(body: ConfigStageRequest) -> dict[str, Any]:
+        revision = api.stage_config(body.kind, body.content)
+        return revision.model_dump()
+
+    @app.post("/api/v1/config/apply")
+    async def apply_config(body: ConfigApplyRequest) -> dict[str, Any]:
+        record = await api.apply_config(body.revision_id, body.expected_active_revision)
+        return record.model_dump()
+
+    @app.get("/api/v1/config/status")
+    async def config_status() -> dict[str, Any]:
+        return api.get_config_status()
 
     @app.websocket("/api/v1/events")
     async def events_ws(ws: WebSocket) -> None:

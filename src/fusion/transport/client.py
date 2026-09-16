@@ -79,6 +79,26 @@ class RuntimeClient:
         r.raise_for_status()
         return r.json()  # type: ignore[no-any-return]
 
+    async def stage_config(self, kind: str, content: dict[str, Any]) -> dict[str, Any]:
+        r = await self._http.post("/api/v1/config/stage", json={"kind": kind, "content": content})
+        r.raise_for_status()
+        return r.json()  # type: ignore[no-any-return]
+
+    async def apply_config(
+        self, revision_id: str, expected_active_revision: str | None = None
+    ) -> dict[str, Any]:
+        r = await self._http.post(
+            "/api/v1/config/apply",
+            json={"revision_id": revision_id, "expected_active_revision": expected_active_revision},
+        )
+        r.raise_for_status()
+        return r.json()  # type: ignore[no-any-return]
+
+    async def get_config_status(self) -> dict[str, Any]:
+        r = await self._http.get("/api/v1/config/status")
+        r.raise_for_status()
+        return r.json()  # type: ignore[no-any-return]
+
     async def get_bytes(self, path: str) -> bytes:
         """For a Runtime-specific extra route that isn't part of the generic
         RuntimeApi contract (e.g. Video's ``/preview`` JPEG snapshot)."""
