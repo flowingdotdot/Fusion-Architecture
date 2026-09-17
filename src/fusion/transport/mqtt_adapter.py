@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import ssl
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import aiomqtt
@@ -43,7 +45,11 @@ import aiomqtt
 from fusion.contracts.config import ApplyRecord, ConfigRevision
 from fusion.core.clock import Clock
 
+logger = logging.getLogger("fusion.mqtt")
+
 DEFAULT_STATUS_INTERVAL_S = 10.0
+DEFAULT_RECONNECT_INITIAL_DELAY_S = 1.0
+DEFAULT_RECONNECT_MAX_DELAY_S = 30.0
 
 
 class ConfigApi(Protocol):
@@ -78,6 +84,9 @@ class MqttSettingAdapter:
         client_id: str | None = None,
         use_tls: bool = False,
         status_interval_s: float = DEFAULT_STATUS_INTERVAL_S,
+        reconnect_initial_delay_s: float = DEFAULT_RECONNECT_INITIAL_DELAY_S,
+        reconnect_max_delay_s: float = DEFAULT_RECONNECT_MAX_DELAY_S,
+        client_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -90,13 +99,16 @@ class MqttSettingAdapter:
         self._client_id = client_id
         self._use_tls = use_tls
         self._status_interval_s = status_interval_s
+        self._reconnect_initial_delay_s = reconnect_initial_delay_s
+        self._reconnect_max_delay_s = reconnect_max_delay_s
+        self._client_factory = client_factory or self._make_real_client
         self._task: asyncio.Task[None] | None = None
 
     def topic(self, suffix: str) -> str:
         return f"{self._prefix}/{self._runtime_id}/{suffix}"
 
     async def start(self) -> None:
-        self._task = asyncio.create_task(self._run())
+        self._task = asyncio.create_task(self._run_forever())
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -107,16 +119,38 @@ class MqttSettingAdapter:
                 pass
             self._task = None
 
-    async def _run(self) -> None:
+    def _make_real_client(self) -> aiomqtt.Client:
         tls_context = ssl.create_default_context() if self._use_tls else None
-        async with aiomqtt.Client(
+        return aiomqtt.Client(
             hostname=self._host,
             port=self._port,
             username=self._username,
             password=self._password,
             identifier=self._client_id,
             tls_context=tls_context,
-        ) as client:
+        )
+
+    async def _run_forever(self) -> None:
+        """A dropped broker connection (network blip, broker restart, long-running
+        deployment outliving a single TCP session) must not permanently kill this
+        background task -- doc's "장시간 운영" requirement implies the MQTT channel
+        recovers on its own, the same way WebSocket resync/control-session renewal
+        already do for the HTTP side. Backoff is exponential, capped, and resets
+        once a connection is actually established."""
+        delay = self._reconnect_initial_delay_s
+        while True:
+            try:
+                await self._connect_and_serve()
+                delay = self._reconnect_initial_delay_s
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - any connect/protocol failure retries, it never leaves the adapter permanently dead
+                logger.warning("mqtt connection lost, retrying in %.1fs: %s", delay, exc)
+                await self._clock.sleep(delay)
+                delay = min(delay * 2, self._reconnect_max_delay_s)
+
+    async def _connect_and_serve(self) -> None:
+        async with self._client_factory() as client:
             await client.subscribe(self.topic("config/stage/request"), qos=1)
             await client.subscribe(self.topic("config/apply/request"), qos=1)
             await self.publish_info(client)

@@ -23,6 +23,14 @@ class FakeRuntimeClient:
         self.sequence = 0
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.submitted: list[dict[str, Any]] = []
+        self._command_records: dict[str, dict[str, Any]] = {}
+        self.instant_complete_outcome: str | None = None
+        """When set, ``submit_command`` marks the command TERMINAL in
+        ``get_command``'s view immediately -- while its own return value still
+        says OBSERVING -- simulating a Target that finished (and had its
+        command.completed Event published) before the submit HTTP round trip
+        even returned, so the WS listener never had a command_id to match it
+        against."""
 
     async def get_snapshot(self) -> dict[str, Any]:
         return {"sequence": self.sequence}
@@ -32,18 +40,27 @@ class FakeRuntimeClient:
 
     async def submit_command(self, **kwargs: Any) -> dict[str, Any]:
         self.submitted.append(kwargs)
-        return {
-            "command_id": f"cmd-for-{kwargs['request_id']}",
-            "status": "OBSERVING",
-            "outcome": None,
-        }
+        command_id = f"cmd-for-{kwargs['request_id']}"
+        if self.instant_complete_outcome is not None:
+            self._command_records[command_id] = {
+                "status": "TERMINAL",
+                "outcome": self.instant_complete_outcome,
+            }
+        else:
+            self._command_records[command_id] = {"status": "OBSERVING", "outcome": None}
+        return {"command_id": command_id, "status": "OBSERVING", "outcome": None}
+
+    async def get_command(self, command_id: str) -> dict[str, Any]:
+        return self._command_records[command_id]
 
     async def complete(self, request_id: str, outcome: str = "SUCCEEDED") -> None:
+        command_id = f"cmd-for-{request_id}"
+        self._command_records[command_id] = {"status": "TERMINAL", "outcome": outcome}
         self.sequence += 1
         await self._queue.put(
             {
                 "type": "command.completed",
-                "command_id": f"cmd-for-{request_id}",
+                "command_id": command_id,
                 "payload": {"outcome": outcome},
             }
         )
@@ -168,3 +185,25 @@ async def test_cue_late_past_a_slow_dependency_can_abort_the_show() -> None:
 
     with pytest.raises(RuntimeError, match="late policy"):
         await run_task
+
+
+async def test_cue_completes_via_get_command_fallback_when_the_event_was_missed() -> None:
+    """Regression test for a real race found during stage 8 soak testing: a
+    Target that completes a command essentially instantly (e.g. a Fake move to
+    a position it's already at) can have its command.completed Event published
+    -- and missed by the per-Runtime listener, since interest in that
+    command_id can only be registered after the submit HTTP round trip returns
+    -- before _run_cue ever gets a chance to register it. Without the
+    get_command fallback in _run_cue, this hangs forever waiting on a future
+    nothing will ever resolve; ``asyncio.wait_for`` turns that hang into a
+    clear test failure instead of a stuck test run."""
+    clock = FakeClock()
+    client = FakeRuntimeClient()
+    client.instant_complete_outcome = "SUCCEEDED"
+    timeline = Timeline(cues=[cue("a")])
+    executor = TimelineExecutor(timeline, {"motor": client}, clock, run_id="run-1")
+
+    outcomes = await asyncio.wait_for(
+        executor.run(session_ids={"motor": "sess"}, hold_check=lambda: False), timeout=1.0
+    )
+    assert outcomes["a"].outcome == "SUCCEEDED"

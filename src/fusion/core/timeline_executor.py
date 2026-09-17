@@ -136,6 +136,20 @@ class TimelineExecutor:
 
         future: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
         self._pending[submitted["command_id"]] = future
+
+        # A command that completes essentially instantly (e.g. a Fake move whose
+        # target equals its current position) can have its completion Event
+        # published -- and missed by _listen, since interest in this command_id
+        # could only be registered after this HTTP round trip returned -- before
+        # we ever get here. Re-check the command's own record and resolve
+        # locally rather than hang forever waiting for an Event that already
+        # came and went; re-check "not done" after the await in case _listen won
+        # the race in the meantime.
+        if not future.done():
+            record = await client.get_command(submitted["command_id"])
+            if not future.done() and record["status"] == "TERMINAL":
+                future.set_result({"outcome": record["outcome"]})
+
         payload = await future
         self._finish(cue, str(payload.get("outcome", "UNKNOWN")), None)
 
